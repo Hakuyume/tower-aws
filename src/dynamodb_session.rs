@@ -10,7 +10,6 @@ use http::{Request, Response, StatusCode};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::future::{self, Future};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -56,6 +55,8 @@ pub struct Middleware<S> {
     rng: Arc<Mutex<ChaCha20Rng>>,
 }
 
+struct Item(HashMap<String, AttributeValue>);
+
 impl<S> Middleware<S> {
     async fn call<T, U>(
         mut self,
@@ -86,9 +87,9 @@ impl<S> Middleware<S> {
         };
 
         let prev = item.clone();
-        request.extensions_mut().insert(Session(item));
+        request.extensions_mut().insert(Item(item));
         let mut response = self.inner.call(request).await.map_err(Either::Left)?;
-        if let Some(Session(new)) = response.extensions_mut().remove() {
+        if let Some(Item(new)) = response.extensions_mut().remove() {
             if new != prev {
                 let builder = self
                     .client
@@ -142,11 +143,13 @@ where
     }
 }
 
-#[derive(Clone, Default)]
-pub struct Session(pub HashMap<String, AttributeValue>);
+pub struct Content<T>(pub T);
 
-impl<S> FromRequestParts<S> for Session {
-    type Rejection = Infallible;
+impl<'de, T, S> FromRequestParts<S> for Content<Option<T>>
+where
+    T: serde::Deserialize<'de> + Send + 'static,
+{
+    type Rejection = StatusCode;
 
     fn from_request_parts<'a, 'b, 'c>(
         parts: &'a mut Parts,
@@ -156,19 +159,33 @@ impl<S> FromRequestParts<S> for Session {
         'a: 'c,
         'b: 'c,
     {
-        Box::pin(future::ready(Ok(parts
-            .extensions
-            .get()
-            .cloned()
-            .unwrap_or_default())))
+        let Item(item) = parts.extensions.get().unwrap();
+        Box::pin(future::ready(
+            item.get("content")
+                .map(|value| serde_dynamo::from_attribute_value(value.clone()))
+                .transpose()
+                .map(Self)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
+        ))
     }
 }
 
-impl IntoResponseParts for Session {
-    type Error = Infallible;
+impl<T> IntoResponseParts for Content<T>
+where
+    T: serde::Serialize,
+{
+    type Error = StatusCode;
 
     fn into_response_parts(self, mut parts: ResponseParts) -> Result<ResponseParts, Self::Error> {
-        parts.extensions_mut().insert(self);
+        parts.extensions_mut().insert(Item(
+            [(
+                "content".to_owned(),
+                serde_dynamo::to_attribute_value(self.0)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            )]
+            .into_iter()
+            .collect(),
+        ));
         Ok(parts)
     }
 }
