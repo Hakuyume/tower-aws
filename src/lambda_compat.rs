@@ -1,6 +1,5 @@
 use http::{Request, Response, StatusCode};
 use lambda_http::RequestExt;
-use std::fmt::{Debug, Display};
 use std::future::{self, Future};
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -38,7 +37,7 @@ pub struct Middleware<S, T> {
 impl<S, T, U> tower::Service<lambda_http::Request> for Middleware<S, T>
 where
     S: tower::Service<Request<T>, Response = Response<U>>,
-    S::Error: Debug + Display + Send + 'static,
+    S::Error: Send + 'static,
     S::Future: Send + 'static,
     T: Default + From<String> + From<Vec<u8>>,
     U: Default + Send + 'static,
