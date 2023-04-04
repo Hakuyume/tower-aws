@@ -104,7 +104,7 @@ impl<S> Middleware<S> {
             }
         }
 
-        let jar = jar.add(
+        let jar = CookieJar::from_headers(response.headers()).add(
             Cookie::build("session-id", session_id.clone())
                 .http_only(true)
                 .secure(true)
