@@ -3,6 +3,7 @@ use aws_sdk_dynamodb::Client;
 use axum::extract::FromRequestParts;
 use axum::response::{IntoResponse, IntoResponseParts, ResponseParts};
 use axum_extra::extract::cookie::{Cookie, CookieJar};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use either::Either;
 use futures::TryFutureExt;
 use http::request::Parts;
@@ -14,15 +15,17 @@ use std::future::{self, Future};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::sync::Mutex;
 
-pub fn layer<S>(client: Client, table_name: S) -> Layer
+pub fn layer<S>(client: Client, table_name: S, ttl: Duration) -> Layer
 where
     S: Into<Arc<str>>,
 {
     Layer {
         client,
         table_name: table_name.into(),
+        ttl: chrono::Duration::from_std(ttl).unwrap(),
         rng: Arc::new(Mutex::new(ChaCha20Rng::from_entropy())),
     }
 }
@@ -31,6 +34,7 @@ where
 pub struct Layer {
     client: Client,
     table_name: Arc<str>,
+    ttl: chrono::Duration,
     rng: Arc<Mutex<ChaCha20Rng>>,
 }
 
@@ -42,6 +46,7 @@ impl<S> tower::Layer<S> for Layer {
             inner,
             client: self.client.clone(),
             table_name: self.table_name.clone(),
+            ttl: self.ttl,
             rng: self.rng.clone(),
         }
     }
@@ -52,39 +57,63 @@ pub struct Middleware<S> {
     inner: S,
     client: Client,
     table_name: Arc<str>,
+    ttl: chrono::Duration,
     rng: Arc<Mutex<ChaCha20Rng>>,
 }
 
 struct Item(HashMap<String, AttributeValue>);
 
 impl<S> Middleware<S> {
+    async fn get(
+        &self,
+        jar: CookieJar,
+        now: DateTime<Utc>,
+    ) -> Result<(String, DateTime<Utc>, HashMap<String, AttributeValue>), Either<(), StatusCode>>
+    {
+        let cookie = jar.get("session-id").ok_or(Either::Left(()))?;
+        let id = cookie.value();
+        let output = self
+            .client
+            .get_item()
+            .table_name(&*self.table_name)
+            .key("id", AttributeValue::S(id.to_owned()))
+            .send()
+            .await
+            .map_err(|_| Either::Right(StatusCode::INTERNAL_SERVER_ERROR))?;
+        let mut item = output.item().cloned().ok_or(Either::Left(()))?;
+        let (Some(AttributeValue::S(id)), Some(AttributeValue::N(expires))) = (item.remove("id"), item.remove("expires")) else { return Err(Either::Left(())); };
+        let expires = DateTime::from_utc(
+            NaiveDateTime::from_timestamp_opt(expires.parse().map_err(|_| Either::Left(()))?, 0)
+                .ok_or(Either::Left(()))?,
+            Utc,
+        );
+        if now < expires {
+            Ok((id, expires, item))
+        } else {
+            Err(Either::Left(()))
+        }
+    }
+
     async fn call<T, U>(
         mut self,
         mut request: Request<T>,
     ) -> Result<S::Response, Either<S::Error, StatusCode>>
     where
+        Self: Clone + Sync,
         S: tower::Service<Request<T>, Response = Response<U>>,
     {
+        let now = Utc::now();
+
         let jar = CookieJar::from_headers(request.headers());
-        let mut item = if let Some(cookie) = jar.get("session-id") {
-            let session_id = cookie.value();
-            let output = self
-                .client
-                .get_item()
-                .table_name(&*self.table_name)
-                .key("id", AttributeValue::S(session_id.to_owned()))
-                .send()
-                .await
-                .map_err(|_| Either::Right(StatusCode::INTERNAL_SERVER_ERROR))?;
-            output.item().cloned().unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        let session_id = if let Some(AttributeValue::S(session_id)) = item.remove("id") {
-            session_id
-        } else {
-            format!("{:032x}", self.rng.lock().await.gen::<u128>())
-        };
+        let (id, expires, item) = match self.get(jar, now).await {
+            Ok((id, expires, item)) => Ok((id, expires, item)),
+            Err(Either::Left(_)) => Ok((
+                format!("{:032x}", self.rng.lock().await.gen::<u128>()),
+                now + self.ttl,
+                HashMap::new(),
+            )),
+            Err(Either::Right(e)) => Err(Either::Right(e)),
+        }?;
 
         let prev = item.clone();
         request.extensions_mut().insert(Item(item));
@@ -95,7 +124,11 @@ impl<S> Middleware<S> {
                     .client
                     .put_item()
                     .table_name(&*self.table_name)
-                    .item("id", AttributeValue::S(session_id.clone()));
+                    .item("id", AttributeValue::S(id.clone()))
+                    .item(
+                        "expires",
+                        AttributeValue::N(expires.timestamp().to_string()),
+                    );
                 new.into_iter()
                     .fold(builder, |builder, (key, value)| builder.item(key, value))
                     .send()
@@ -105,7 +138,7 @@ impl<S> Middleware<S> {
         }
 
         let jar = CookieJar::from_headers(response.headers()).add(
-            Cookie::build("session-id", session_id.clone())
+            Cookie::build("session-id", id.clone())
                 .http_only(true)
                 .secure(true)
                 .finish(),
@@ -118,7 +151,7 @@ impl<S> Middleware<S> {
 
 impl<S, T, U> tower::Service<Request<T>> for Middleware<S>
 where
-    Self: Clone,
+    Self: Clone + Sync,
     S: tower::Service<Request<T>, Response = Response<U>> + Send + 'static,
     S::Future: Send,
     S::Error: Send,

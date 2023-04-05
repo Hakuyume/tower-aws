@@ -9,6 +9,7 @@ edition = "2021"
 axum = { version = "0.6", default-features = false }
 axum-extra = { version = "0.7", features = ["cookie"] }
 aws-sdk-dynamodb = "0.25"
+chrono = "0.4"
 either = "1"
 futures = "0.3"
 http = "0.2"
