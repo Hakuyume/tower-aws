@@ -65,17 +65,17 @@ struct Item(HashMap<String, AttributeValue>);
 
 impl<S> Middleware<S> {
     async fn get(
-        &self,
+        client: &Client,
+        table_name: &str,
         jar: CookieJar,
         now: DateTime<Utc>,
     ) -> Result<(String, DateTime<Utc>, HashMap<String, AttributeValue>), Either<(), StatusCode>>
     {
         let cookie = jar.get("session-id").ok_or(Either::Left(()))?;
         let id = cookie.value();
-        let output = self
-            .client
+        let output = client
             .get_item()
-            .table_name(&*self.table_name)
+            .table_name(table_name)
             .key("id", AttributeValue::S(id.to_owned()))
             .send()
             .await
@@ -99,13 +99,12 @@ impl<S> Middleware<S> {
         mut request: Request<T>,
     ) -> Result<S::Response, Either<S::Error, StatusCode>>
     where
-        Self: Clone + Sync,
         S: tower::Service<Request<T>, Response = Response<U>>,
     {
         let now = Utc::now();
 
         let jar = CookieJar::from_headers(request.headers());
-        let (id, expires, item) = match self.get(jar, now).await {
+        let (id, expires, item) = match Self::get(&self.client, &self.table_name, jar, now).await {
             Ok((id, expires, item)) => Ok((id, expires, item)),
             Err(Either::Left(_)) => Ok((
                 format!("{:032x}", self.rng.lock().await.gen::<u128>()),
@@ -151,7 +150,7 @@ impl<S> Middleware<S> {
 
 impl<S, T, U> tower::Service<Request<T>> for Middleware<S>
 where
-    Self: Clone + Sync,
+    Self: Clone,
     S: tower::Service<Request<T>, Response = Response<U>> + Send + 'static,
     S::Future: Send,
     S::Error: Send,
