@@ -175,9 +175,9 @@ where
     }
 }
 
-pub struct Storage<T>(pub T);
+pub struct Data<T>(pub T);
 
-impl<'de, T, S> FromRequestParts<S> for Storage<Option<T>>
+impl<'de, T, S> FromRequestParts<S> for Data<Option<T>>
 where
     T: serde::Deserialize<'de> + Send + 'static,
 {
@@ -193,7 +193,7 @@ where
     {
         let Item(item) = parts.extensions.get().unwrap();
         Box::pin(future::ready(
-            item.get("storage")
+            item.get("data")
                 .map(|value| serde_dynamo::from_attribute_value(value.clone()))
                 .transpose()
                 .map(Self)
@@ -202,7 +202,7 @@ where
     }
 }
 
-impl<T> IntoResponseParts for Storage<T>
+impl<T> IntoResponseParts for Data<T>
 where
     T: serde::Serialize,
 {
@@ -211,7 +211,7 @@ where
     fn into_response_parts(self, mut parts: ResponseParts) -> Result<ResponseParts, Self::Error> {
         parts.extensions_mut().insert(Item(
             [(
-                "storage".to_owned(),
+                "data".to_owned(),
                 serde_dynamo::to_attribute_value(self.0)
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
             )]
