@@ -44,10 +44,7 @@ impl<S> tower::Layer<S> for Layer {
     fn layer(&self, inner: S) -> Self::Service {
         Self::Service {
             inner,
-            client: self.client.clone(),
-            table_name: self.table_name.clone(),
-            ttl: self.ttl,
-            rng: self.rng.clone(),
+            layer: self.clone(),
         }
     }
 }
@@ -55,27 +52,24 @@ impl<S> tower::Layer<S> for Layer {
 #[derive(Clone)]
 pub struct Middleware<S> {
     inner: S,
-    client: Client,
-    table_name: Arc<str>,
-    ttl: chrono::Duration,
-    rng: Arc<Mutex<ChaCha20Rng>>,
+    layer: Layer,
 }
 
 struct Item(HashMap<String, AttributeValue>);
 
 impl<S> Middleware<S> {
     async fn get(
-        client: &Client,
-        table_name: &str,
+        layer: &Layer,
         jar: CookieJar,
         now: DateTime<Utc>,
     ) -> Result<(String, DateTime<Utc>, HashMap<String, AttributeValue>), Either<(), StatusCode>>
     {
         let cookie = jar.get("session-id").ok_or(Either::Left(()))?;
         let id = cookie.value();
-        let output = client
+        let output = layer
+            .client
             .get_item()
-            .table_name(table_name)
+            .table_name(&*layer.table_name)
             .key("id", AttributeValue::S(id.to_owned()))
             .send()
             .await
@@ -104,11 +98,11 @@ impl<S> Middleware<S> {
         let now = Utc::now();
 
         let jar = CookieJar::from_headers(request.headers());
-        let (id, expires, item) = match Self::get(&self.client, &self.table_name, jar, now).await {
+        let (id, expires, item) = match Self::get(&self.layer, jar, now).await {
             Ok((id, expires, item)) => Ok((id, expires, item)),
             Err(Either::Left(_)) => Ok((
-                format!("{:032x}", self.rng.lock().await.gen::<u128>()),
-                now + self.ttl,
+                format!("{:032x}", self.layer.rng.lock().await.gen::<u128>()),
+                now + self.layer.ttl,
                 HashMap::new(),
             )),
             Err(Either::Right(e)) => Err(Either::Right(e)),
@@ -120,9 +114,10 @@ impl<S> Middleware<S> {
         if let Some(Item(new)) = response.extensions_mut().remove() {
             if new != prev {
                 let builder = self
+                    .layer
                     .client
                     .put_item()
-                    .table_name(&*self.table_name)
+                    .table_name(&*self.layer.table_name)
                     .item("id", AttributeValue::S(id.clone()))
                     .item(
                         "expires",
