@@ -1,4 +1,5 @@
 use axum::body::Body;
+use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Json};
 use axum::routing;
 use axum::Router;
@@ -19,19 +20,20 @@ async fn main() {
     let config = aws_config::from_env().load().await;
 
     let app = Router::new()
-        .route("/healthz", routing::get(healthz))
+        .route("/counter", routing::get(counter))
         .layer(tower_aws::dynamodb_session::layer(
             aws_sdk_dynamodb::Client::new(&config),
             env::var("SESSION_TABLE_NAME").unwrap(),
             Duration::from_secs(60),
-        ));
+        ))
+        .fallback(fallback);
 
     lambda_http::run(tower_aws::lambda_compat::layer::<Body>().layer(app))
         .await
         .unwrap();
 }
 
-async fn healthz(Data(count): Data<Option<u64>>) -> impl IntoResponse {
+async fn counter(Data(count): Data<Option<u64>>) -> impl IntoResponse {
     #[derive(Serialize)]
     struct Response {
         count: u64,
@@ -39,4 +41,8 @@ async fn healthz(Data(count): Data<Option<u64>>) -> impl IntoResponse {
 
     let count = count.unwrap_or_default() + 1;
     (Data(count), Json(Response { count }))
+}
+
+async fn fallback(uri: Uri) -> (StatusCode, String) {
+    (StatusCode::NOT_FOUND, uri.to_string())
 }
