@@ -108,9 +108,10 @@ resource "aws_apigatewayv2_api" "sample" {
 }
 
 resource "aws_apigatewayv2_integration" "sample" {
-  api_id           = aws_apigatewayv2_api.sample.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.sample.invoke_arn
+  api_id                 = aws_apigatewayv2_api.sample.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.sample.invoke_arn
+  payload_format_version = "2.0"
 }
 
 resource "aws_apigatewayv2_route" "sample" {
@@ -121,6 +122,6 @@ resource "aws_apigatewayv2_route" "sample" {
 
 resource "aws_apigatewayv2_stage" "sample" {
   api_id      = aws_apigatewayv2_api.sample.id
-  name        = "dev"
+  name        = "$default"
   auto_deploy = true
 }
