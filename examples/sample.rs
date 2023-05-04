@@ -1,13 +1,13 @@
 use axum::body::Body;
+use axum::extract::FromRef;
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Json};
 use axum::routing;
 use axum::Router;
 use serde::Serialize;
 use std::env;
-use std::time::Duration;
 use tower::Layer;
-use tower_aws::dynamodb_session::Data;
+use tower_aws::kms_cookie::{Cookie, KeyId, PrivateCookieJar};
 
 #[tokio::main]
 async fn main() {
@@ -19,28 +19,45 @@ async fn main() {
 
     let config = aws_config::from_env().load().await;
 
+    #[derive(Clone, FromRef)]
+    struct State {
+        kms_client: aws_sdk_kms::Client,
+        kms_key_id: KeyId,
+    }
+
     let app = Router::new()
         .route("/counter", routing::get(counter))
-        .layer(tower_aws::dynamodb_session::layer(
-            aws_sdk_dynamodb::Client::new(&config),
-            env::var("SESSION_TABLE_NAME").unwrap(),
-            Duration::from_secs(60),
-        ))
-        .fallback(fallback);
+        .fallback(fallback)
+        .with_state(State {
+            kms_client: aws_sdk_kms::Client::new(&config),
+            kms_key_id: KeyId::new(env::var("KMS_KEY_ID").unwrap()),
+        });
 
     lambda_http::run(tower_aws::lambda_compat::layer::<Body>().layer(app))
         .await
         .unwrap();
 }
 
-async fn counter(Data(count): Data<Option<u64>>) -> impl IntoResponse {
+async fn counter(jar: PrivateCookieJar) -> impl IntoResponse {
     #[derive(Serialize)]
     struct Response {
-        count: u64,
+        count: usize,
     }
 
-    let count = count.unwrap_or_default() + 1;
-    (Data(count), Json(Response { count }))
+    let count = jar
+        .get("count")
+        .and_then(|cookie| cookie.value().parse::<usize>().ok())
+        .unwrap_or_default();
+    let count = count + 1;
+
+    let jar = jar.add(
+        Cookie::build("count", count.to_string())
+            .http_only(true)
+            .secure(true)
+            .finish(),
+    );
+
+    (jar.finish().await, Json(Response { count }))
 }
 
 async fn fallback(uri: Uri) -> (StatusCode, String) {

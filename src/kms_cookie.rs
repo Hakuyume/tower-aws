@@ -6,14 +6,25 @@ use aws_sdk_kms::Client;
 use axum::extract::{FromRef, FromRequestParts};
 use axum::response::{IntoResponseParts, ResponseParts};
 use base64::prelude::{Engine, BASE64_URL_SAFE_NO_PAD};
-use cookie::{Cookie, CookieJar};
+pub use cookie::Cookie;
+use cookie::CookieJar;
 use http::header::{COOKIE, SET_COOKIE};
 use http::request::Parts;
 use http::StatusCode;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct KeyId(pub String);
+pub struct KeyId(Arc<str>);
+
+impl KeyId {
+    pub fn new<K>(key_id: K) -> Self
+    where
+        K: Into<Arc<str>>,
+    {
+        Self(key_id.into())
+    }
+}
 
 pub struct PrivateCookieJar<K = KeyId> {
     jar: CookieJar,
@@ -47,7 +58,7 @@ where
                     let Ok(value) = BASE64_URL_SAFE_NO_PAD.decode(cookie.value()) else { return Ok(None) };
                     let output = client
                     .decrypt()
-                    .key_id(&key_id.0)
+                    .key_id(&*key_id.0)
                     .ciphertext_blob(Blob::new(value))
                     .send()
                     .await;
@@ -88,6 +99,20 @@ where
 }
 
 impl<K> PrivateCookieJar<K> {
+    pub fn add(mut self, cookie: Cookie<'static>) -> Self {
+        self.jar.add(cookie);
+        self
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Cookie<'static>> {
+        self.jar.get(name)
+    }
+
+    pub fn remove(mut self, cookie: Cookie<'static>) -> Self {
+        self.jar.remove(cookie);
+        self
+    }
+
     pub async fn finish(self) -> impl IntoResponseParts {
         struct Cookies(Result<Vec<Cookie<'static>>, SdkError<EncryptError>>);
 
@@ -114,7 +139,7 @@ impl<K> PrivateCookieJar<K> {
             let output = self
                 .client
                 .encrypt()
-                .key_id(&self.key_id.0)
+                .key_id(&*self.key_id.0)
                 .plaintext(Blob::new(cookie.value()))
                 .send()
                 .await?;

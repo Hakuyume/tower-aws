@@ -33,20 +33,7 @@ data "archive_file" "sample" {
   depends_on  = [null_resource.cargo_lambda_build]
 }
 
-resource "aws_dynamodb_table" "sample" {
-  name           = "tower-aws-sample"
-  hash_key       = "id"
-  read_capacity  = 1
-  write_capacity = 1
-  attribute {
-    name = "id"
-    type = "S"
-  }
-  ttl {
-    enabled        = true
-    attribute_name = "expires"
-  }
-}
+resource "aws_kms_key" "sample" {}
 
 data "aws_iam_policy_document" "sample_assume_role_policy" {
   statement {
@@ -68,10 +55,10 @@ data "aws_iam_policy_document" "sample_policy" {
   statement {
     effect = "Allow"
     actions = [
-      "dynamodb:GetItem",
-      "dynamodb:PutItem",
+      "kms::Decrypt",
+      "kms::Encrypt",
     ]
-    resources = [aws_dynamodb_table.sample.arn]
+    resources = [aws_kms_key.sample.arn]
   }
 }
 
@@ -90,7 +77,7 @@ resource "aws_lambda_function" "sample" {
   handler          = "handler"
   environment {
     variables = {
-      SESSION_TABLE_NAME = aws_dynamodb_table.sample.name
+      KMS_KEY_ID = aws_kms_key.sample.key_id
     }
   }
 }
