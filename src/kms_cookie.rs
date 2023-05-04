@@ -36,7 +36,7 @@ pub struct PrivateCookieJar<K = KeyId> {
     _marker: PhantomData<fn(K) -> K>,
 }
 
-impl<K> PrivateCookieJar<K> {
+impl PrivateCookieJar {
     pub fn from_headers(
         headers: &HeaderMap,
         client: Client,
@@ -87,7 +87,9 @@ impl<K> PrivateCookieJar<K> {
             }
         })
     }
+}
 
+impl<K> PrivateCookieJar<K> {
     pub fn into_headers(self) -> impl Future<Output = Result<HeaderMap, SdkError<EncryptError>>> {
         futures::future::try_join_all(self.jar.delta().cloned().map(|cookie| {
             self.client
@@ -151,7 +153,7 @@ impl<K> PrivateCookieJar<K> {
 impl<S, K> FromRequestParts<S> for PrivateCookieJar<K>
 where
     Client: FromRef<S>,
-    K: FromRef<S> + Into<KeyId> + 'static,
+    K: FromRef<S> + Into<KeyId>,
 {
     type Rejection = (StatusCode, String);
 
@@ -164,10 +166,23 @@ where
         'b: 'c,
     {
         Box::pin(
-            Self::from_headers(
+            PrivateCookieJar::from_headers(
                 &parts.headers,
                 Client::from_ref(state),
                 K::from_ref(state).into(),
+            )
+            .map_ok(
+                |PrivateCookieJar {
+                     jar,
+                     client,
+                     key_id,
+                     ..
+                 }| Self {
+                    jar,
+                    client,
+                    key_id,
+                    _marker: PhantomData,
+                },
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
         )
