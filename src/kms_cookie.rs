@@ -11,7 +11,7 @@ use cookie::CookieJar;
 use futures::{FutureExt, TryFutureExt};
 use http::header::{COOKIE, SET_COOKIE};
 use http::request::Parts;
-use http::StatusCode;
+use http::{HeaderMap, StatusCode};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -36,26 +36,13 @@ pub struct PrivateCookieJar<K = KeyId> {
     _marker: PhantomData<fn(K) -> K>,
 }
 
-impl<S, K> FromRequestParts<S> for PrivateCookieJar<K>
-where
-    Client: FromRef<S>,
-    K: FromRef<S> + Into<KeyId>,
-{
-    type Rejection = (StatusCode, String);
-
-    fn from_request_parts<'a, 'b, 'c>(
-        parts: &'a mut Parts,
-        state: &'b S,
-    ) -> Pin<Box<dyn Future<Output = Result<Self, Self::Rejection>> + Send + 'c>>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        let client = Client::from_ref(state);
-        let key_id = K::from_ref(state).into();
-
-        let cookies = parts
-            .headers
+impl<K> PrivateCookieJar<K> {
+    pub fn from_headers(
+        headers: &HeaderMap,
+        client: Client,
+        key_id: KeyId,
+    ) -> impl Future<Output = Result<Self, SdkError<DecryptError>>> {
+        let cookie_outputs = headers
             .get_all(COOKIE)
             .into_iter()
             .filter_map(|value| value.to_str().ok())
@@ -63,7 +50,7 @@ where
             .filter_map(|cookie| {
                 let cookie = cookie.ok()?;
                 let value = BASE64_URL_SAFE_NO_PAD.decode(cookie.value()).ok()?;
-                Some((cookie, value))
+                Some((cookie.into_owned(), value))
             })
             .map(|(cookie, value)| {
                 client
@@ -72,15 +59,7 @@ where
                     .ciphertext_blob(Blob::new(value))
                     .send()
                     .map(|output| match output {
-                        Ok(output) => Ok(String::from_utf8(
-                            output.plaintext().unwrap().clone().into_inner(),
-                        )
-                        .ok()
-                        .map(|value| {
-                            let mut cookie = cookie.into_owned();
-                            cookie.set_value(value);
-                            cookie
-                        })),
+                        Ok(output) => Ok(Some((cookie, output))),
                         Err(SdkError::ServiceError(e))
                             if matches!(e.err(), DecryptError::InvalidCiphertextException(_)) =>
                         {
@@ -90,26 +69,48 @@ where
                     })
             });
 
-        Box::pin(
-            futures::future::try_join_all(cookies)
-                .map_ok(|cookies| {
-                    let mut jar = CookieJar::new();
-                    for cookie in cookies.into_iter().flatten() {
+        futures::future::try_join_all(cookie_outputs).map_ok(|cookie_outputs| {
+            let mut jar = CookieJar::new();
+            for (mut cookie, output) in cookie_outputs.into_iter().flatten() {
+                if let Some(plaintext) = output.plaintext() {
+                    if let Ok(value) = String::from_utf8(plaintext.clone().into_inner()) {
+                        cookie.set_value(value);
                         jar.add_original(cookie);
                     }
-                    Self {
-                        jar,
-                        client,
-                        key_id,
-                        _marker: PhantomData,
-                    }
-                })
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-        )
+                }
+            }
+            Self {
+                jar,
+                client,
+                key_id,
+                _marker: PhantomData,
+            }
+        })
     }
-}
 
-impl<K> PrivateCookieJar<K> {
+    pub fn into_headers(self) -> impl Future<Output = Result<HeaderMap, SdkError<EncryptError>>> {
+        futures::future::try_join_all(self.jar.delta().cloned().map(|cookie| {
+            self.client
+                .encrypt()
+                .key_id(&*self.key_id.0)
+                .plaintext(Blob::new(cookie.value()))
+                .send()
+                .map_ok(|output| (cookie, output))
+        }))
+        .map_ok(|cookie_outputs| {
+            let mut headers = HeaderMap::new();
+            for (mut cookie, output) in cookie_outputs {
+                if let Some(ciphertext) = output.ciphertext_blob() {
+                    cookie.set_value(BASE64_URL_SAFE_NO_PAD.encode(ciphertext));
+                    if let Ok(value) = cookie.to_string().parse() {
+                        headers.append(SET_COOKIE, value);
+                    }
+                }
+            }
+            headers
+        })
+    }
+
     #[allow(clippy::should_implement_trait)]
     pub fn add(mut self, cookie: Cookie<'static>) -> Self {
         self.jar.add(cookie);
@@ -125,42 +126,50 @@ impl<K> PrivateCookieJar<K> {
         self
     }
 
-    pub async fn finish(self) -> impl IntoResponseParts {
-        struct Cookies(Result<Vec<Cookie<'static>>, SdkError<EncryptError>>);
+    pub fn finish(self) -> impl Future<Output = impl IntoResponseParts> {
+        struct Output(Result<HeaderMap, SdkError<EncryptError>>);
 
-        impl IntoResponseParts for Cookies {
+        impl IntoResponseParts for Output {
             type Error = (StatusCode, String);
 
             fn into_response_parts(
                 self,
-                mut parts: ResponseParts,
+                parts: ResponseParts,
             ) -> Result<ResponseParts, Self::Error> {
-                for cookie in self
+                Ok(self
                     .0
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                {
-                    parts
-                        .headers_mut()
-                        .append(SET_COOKIE, cookie.to_string().parse().unwrap());
-                }
-                Ok(parts)
+                    .into_response_parts(parts)
+                    .unwrap())
             }
         }
 
-        let cookies = self.jar.delta().map(|cookie| {
-            self.client
-                .encrypt()
-                .key_id(&*self.key_id.0)
-                .plaintext(Blob::new(cookie.value()))
-                .send()
-                .map_ok(|output| {
-                    let mut cookie = cookie.clone();
-                    cookie.set_value(
-                        BASE64_URL_SAFE_NO_PAD.encode(output.ciphertext_blob().unwrap()),
-                    );
-                    cookie
-                })
-        });
-        Cookies(futures::future::try_join_all(cookies).await)
+        self.into_headers().map(Output)
+    }
+}
+
+impl<S, K> FromRequestParts<S> for PrivateCookieJar<K>
+where
+    Client: FromRef<S>,
+    K: FromRef<S> + Into<KeyId> + 'static,
+{
+    type Rejection = (StatusCode, String);
+
+    fn from_request_parts<'a, 'b, 'c>(
+        parts: &'a mut Parts,
+        state: &'b S,
+    ) -> Pin<Box<dyn Future<Output = Result<Self, Self::Rejection>> + Send + 'c>>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        Box::pin(
+            Self::from_headers(
+                &parts.headers,
+                Client::from_ref(state),
+                K::from_ref(state).into(),
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        )
     }
 }
