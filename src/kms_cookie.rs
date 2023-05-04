@@ -8,10 +8,13 @@ use axum::response::{IntoResponseParts, ResponseParts};
 use base64::prelude::{Engine, BASE64_URL_SAFE_NO_PAD};
 pub use cookie::Cookie;
 use cookie::CookieJar;
+use futures::{FutureExt, TryFutureExt};
 use http::header::{COOKIE, SET_COOKIE};
 use http::request::Parts;
 use http::StatusCode;
+use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -33,16 +36,21 @@ pub struct PrivateCookieJar<K = KeyId> {
     _marker: PhantomData<fn(K) -> K>,
 }
 
-#[axum::async_trait]
 impl<S, K> FromRequestParts<S> for PrivateCookieJar<K>
 where
-    S: Send + Sync,
     Client: FromRef<S>,
     K: FromRef<S> + Into<KeyId>,
 {
     type Rejection = (StatusCode, String);
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+    fn from_request_parts<'a, 'b, 'c>(
+        parts: &'a mut Parts,
+        state: &'b S,
+    ) -> Pin<Box<dyn Future<Output = Result<Self, Self::Rejection>> + Send + 'c>>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
         let client = Client::from_ref(state);
         let key_id = K::from_ref(state).into();
 
@@ -52,49 +60,52 @@ where
             .into_iter()
             .filter_map(|value| value.to_str().ok())
             .flat_map(Cookie::split_parse)
-            .filter_map(Result::ok)
-            .map(|cookie| {
-                async  {
-                    let Ok(value) = BASE64_URL_SAFE_NO_PAD.decode(cookie.value()) else { return Ok(None) };
-                    let output = client
+            .filter_map(|cookie| {
+                let cookie = cookie.ok()?;
+                let value = BASE64_URL_SAFE_NO_PAD.decode(cookie.value()).ok()?;
+                Some((cookie, value))
+            })
+            .map(|(cookie, value)| {
+                client
                     .decrypt()
                     .key_id(&*key_id.0)
                     .ciphertext_blob(Blob::new(value))
                     .send()
-                    .await;
-                    match output {
-                        Ok(output) => {
-                            let value = output.plaintext().cloned().unwrap();
-                            let Ok(value) = String::from_utf8(value.into_inner()) else { return Ok(None) };
+                    .map(|output| match output {
+                        Ok(output) => Ok(String::from_utf8(
+                            output.plaintext().unwrap().clone().into_inner(),
+                        )
+                        .ok()
+                        .map(|value| {
                             let mut cookie = cookie.into_owned();
                             cookie.set_value(value);
-                            Ok(Some(cookie))
-                    }
+                            cookie
+                        })),
                         Err(SdkError::ServiceError(e))
                             if matches!(e.err(), DecryptError::InvalidCiphertextException(_)) =>
                         {
                             Ok(None)
                         }
                         Err(e) => Err(e),
+                    })
+            });
+
+        Box::pin(
+            futures::future::try_join_all(cookies)
+                .map_ok(|cookies| {
+                    let mut jar = CookieJar::new();
+                    for cookie in cookies.into_iter().flatten() {
+                        jar.add_original(cookie);
                     }
-                }});
-
-        let mut jar = CookieJar::new();
-        for cookie in futures::future::try_join_all(cookies)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .into_iter()
-            .flatten()
-        {
-            jar.add_original(cookie);
-        }
-
-        Ok(Self {
-            jar,
-            client,
-            key_id,
-            _marker: PhantomData,
-        })
+                    Self {
+                        jar,
+                        client,
+                        key_id,
+                        _marker: PhantomData,
+                    }
+                })
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        )
     }
 }
 
@@ -136,17 +147,19 @@ impl<K> PrivateCookieJar<K> {
             }
         }
 
-        let cookies = self.jar.delta().map(|cookie| async {
-            let output = self
-                .client
+        let cookies = self.jar.delta().map(|cookie| {
+            self.client
                 .encrypt()
                 .key_id(&*self.key_id.0)
                 .plaintext(Blob::new(cookie.value()))
                 .send()
-                .await?;
-            let mut cookie = cookie.clone();
-            cookie.set_value(BASE64_URL_SAFE_NO_PAD.encode(output.ciphertext_blob().unwrap()));
-            Ok(cookie)
+                .map_ok(|output| {
+                    let mut cookie = cookie.clone();
+                    cookie.set_value(
+                        BASE64_URL_SAFE_NO_PAD.encode(output.ciphertext_blob().unwrap()),
+                    );
+                    cookie
+                })
         });
         Cookies(futures::future::try_join_all(cookies).await)
     }
