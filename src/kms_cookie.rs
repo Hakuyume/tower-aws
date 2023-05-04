@@ -83,10 +83,10 @@ where
         for cookie in futures::future::try_join_all(cookies)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .into_iter()
+            .flatten()
         {
-            if let Some(cookie) = cookie {
-                jar.add_original(cookie);
-            }
+            jar.add_original(cookie);
         }
 
         Ok(Self {
@@ -99,6 +99,7 @@ where
 }
 
 impl<K> PrivateCookieJar<K> {
+    #[allow(clippy::should_implement_trait)]
     pub fn add(mut self, cookie: Cookie<'static>) -> Self {
         self.jar.add(cookie);
         self
