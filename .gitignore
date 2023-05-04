@@ -1,6 +1,5 @@
 /Cargo.lock
 /target/
-/terraform.tfstate
-/terraform.tfstate.backup
+/terraform.*
 /.terraform/
-/.terraform.lock.hcl
+/.terraform.*
