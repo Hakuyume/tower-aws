@@ -128,27 +128,12 @@ impl<K> PrivateCookieJar<K> {
         self
     }
 
-    pub fn finish(self) -> impl Future<Output = impl IntoResponseParts> {
-        struct Output(Result<HeaderMap, SdkError<EncryptError>>);
-
-        impl IntoResponseParts for Output {
-            type Error = (StatusCode, String);
-
-            fn into_response_parts(
-                self,
-                parts: ResponseParts,
-            ) -> Result<ResponseParts, Self::Error> {
-                Ok(self
-                    .0
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                    .into_response_parts(parts)
-                    .unwrap())
-            }
-        }
-
-        self.into_headers().map(Output)
+    pub fn finish(self) -> impl Future<Output = Finish<Result<HeaderMap, SdkError<EncryptError>>>> {
+        self.into_headers().map(Finish)
     }
 }
+
+pub struct Finish<T>(T);
 
 impl<S, K> FromRequestParts<S> for PrivateCookieJar<K>
 where
@@ -186,5 +171,17 @@ where
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
         )
+    }
+}
+
+impl IntoResponseParts for Finish<Result<HeaderMap, SdkError<EncryptError>>> {
+    type Error = (StatusCode, String);
+
+    fn into_response_parts(self, parts: ResponseParts) -> Result<ResponseParts, Self::Error> {
+        Ok(self
+            .0
+            .map_err(|e| (http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .into_response_parts(parts)
+            .unwrap())
     }
 }
