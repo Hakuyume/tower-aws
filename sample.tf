@@ -55,8 +55,8 @@ data "aws_iam_policy_document" "sample_policy" {
   statement {
     effect = "Allow"
     actions = [
-      "kms::Decrypt",
-      "kms::Encrypt",
+      "kms:Decrypt",
+      "kms:Encrypt",
     ]
     resources = [aws_kms_key.sample.arn]
   }
