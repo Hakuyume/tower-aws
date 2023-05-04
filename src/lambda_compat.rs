@@ -4,13 +4,13 @@ use std::task::{Context, Poll};
 
 pub fn layer<T>() -> Layer<T> {
     Layer {
-        _data: PhantomData::default(),
+        _marker: PhantomData,
     }
 }
 
 #[derive(Clone)]
 pub struct Layer<T> {
-    _data: PhantomData<fn(T) -> T>,
+    _marker: PhantomData<fn(T) -> T>,
 }
 
 impl<S, T> tower::Layer<S> for Layer<T> {
@@ -19,7 +19,7 @@ impl<S, T> tower::Layer<S> for Layer<T> {
     fn layer(&self, inner: S) -> Self::Service {
         Self::Service {
             inner,
-            _data: PhantomData::default(),
+            _marker: PhantomData,
         }
     }
 }
@@ -27,7 +27,7 @@ impl<S, T> tower::Layer<S> for Layer<T> {
 #[derive(Clone)]
 pub struct Middleware<S, T> {
     inner: S,
-    _data: PhantomData<fn(T) -> T>,
+    _marker: PhantomData<fn(T) -> T>,
 }
 
 impl<S, T> tower::Service<lambda_http::Request> for Middleware<S, T>
