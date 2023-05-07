@@ -61,7 +61,11 @@ impl PrivateCookieJar {
                     .map(|output| match output {
                         Ok(output) => Ok(Some((cookie, output))),
                         Err(SdkError::ServiceError(e))
-                            if matches!(e.err(), DecryptError::InvalidCiphertextException(_)) =>
+                            if matches!(
+                                e.err(),
+                                DecryptError::IncorrectKeyException(_)
+                                    | DecryptError::InvalidCiphertextException(_)
+                            ) =>
                         {
                             Ok(None)
                         }
