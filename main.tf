@@ -39,7 +39,7 @@ data "archive_file" "this" {
 
 resource "aws_kms_key" "this" {}
 
-data "aws_iam_policy_document" "assume_role_policy" {
+data "aws_iam_policy_document" "assume_role" {
   statement {
     effect = "Allow"
     principals {
@@ -50,7 +50,7 @@ data "aws_iam_policy_document" "assume_role_policy" {
   }
 }
 
-data "aws_iam_policy_document" "role_policy" {
+data "aws_iam_policy_document" "role" {
   statement {
     effect = "Allow"
     actions = [
@@ -62,12 +62,12 @@ data "aws_iam_policy_document" "role_policy" {
 }
 
 resource "aws_iam_role" "this" {
-  assume_role_policy = data.aws_iam_policy_document.assume_role_policy.json
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
 }
 
 resource "aws_iam_role_policy" "this" {
   role   = aws_iam_role.this.name
-  policy = data.aws_iam_policy_document.role_policy.json
+  policy = data.aws_iam_policy_document.role.json
 }
 
 resource "aws_lambda_function" "this" {
