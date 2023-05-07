@@ -14,11 +14,11 @@ futures = "0.3"
 http = "0.2"
 lambda_http = "0.8"
 tower = "0.4"
+tracing = "0.1"
 
 [dev-dependencies]
 aws-config = "0.55"
 axum = { version = "0.6", features = ["macros"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros"] }
-tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
