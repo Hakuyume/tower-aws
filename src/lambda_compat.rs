@@ -14,7 +14,7 @@ pub struct Layer<T> {
 }
 
 impl<S, T> tower::Layer<S> for Layer<T> {
-    type Service = Middleware<S, T>;
+    type Service = Service<S, T>;
 
     fn layer(&self, inner: S) -> Self::Service {
         Self::Service {
@@ -25,12 +25,12 @@ impl<S, T> tower::Layer<S> for Layer<T> {
 }
 
 #[derive(Clone)]
-pub struct Middleware<S, T> {
+pub struct Service<S, T> {
     inner: S,
     _marker: PhantomData<fn(T) -> T>,
 }
 
-impl<S, T> tower::Service<lambda_http::Request> for Middleware<S, T>
+impl<S, T> tower::Service<lambda_http::Request> for Service<S, T>
 where
     S: tower::Service<Request<T>>,
     T: Default + From<String> + From<Vec<u8>>,
