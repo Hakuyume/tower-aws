@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 axum = { version = "0.6", default-features = false }
-aws-sdk-kms = "0.27"
+aws-sdk-kms = "0.30"
 base64 = "0.21"
 cookie = "0.17"
 futures = "0.3"
@@ -17,7 +17,7 @@ tower = "0.4"
 tracing = "0.1"
 
 [dev-dependencies]
-aws-config = "0.55"
+aws-config = "0.56"
 axum = { version = "0.6", features = ["macros"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros"] }
