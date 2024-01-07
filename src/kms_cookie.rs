@@ -61,11 +61,11 @@ impl PrivateCookieJar {
                     .map(|output| match output {
                         Ok(output) => Ok(Some((cookie, output))),
                         Err(e @ SdkError::ServiceError(_)) => {
-                            tracing::warn!(error = ?e);
+                            tracing::warn!(error = e.to_string());
                             Ok(None)
                         }
                         Err(e) => {
-                            tracing::error!(error = ?e);
+                            tracing::error!(error = e.to_string());
                             Err(e)
                         }
                     })
@@ -100,7 +100,7 @@ impl<K> PrivateCookieJar<K> {
                 .plaintext(Blob::new(cookie.value()))
                 .send()
                 .map_ok(|output| (cookie, output))
-                .inspect_err(|e| tracing::error!(error = ?e))
+                .inspect_err(|e| tracing::error!(error = e.to_string()))
         }))
         .map_ok(|cookie_outputs| {
             let mut headers = HeaderMap::new();
