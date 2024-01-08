@@ -11,7 +11,7 @@ use tower::Layer;
 use tower_aws::kms_cookie::{Cookie, KeyId, PrivateCookieJar};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .with_target(false)
@@ -31,12 +31,14 @@ async fn main() {
         .fallback(fallback)
         .with_state(State {
             kms_client: aws_sdk_kms::Client::new(&config),
-            kms_key_id: KeyId::new(env::var("KMS_KEY_ID").unwrap()),
+            kms_key_id: KeyId::new(env::var("KMS_KEY_ID")?),
         });
 
     lambda_http::run(tower_aws::lambda_compat::layer::<Body>().layer(app))
         .await
-        .unwrap();
+        .map_err(|e| anyhow::format_err!(e))?;
+
+    Ok(())
 }
 
 async fn counter(jar: PrivateCookieJar) -> impl IntoResponse {
