@@ -116,19 +116,29 @@ impl<K> PrivateCookieJar<K> {
         })
     }
 
-    #[allow(clippy::should_implement_trait)]
-    pub fn add(mut self, cookie: Cookie<'static>) -> Self {
-        self.jar.add(cookie);
-        self
-    }
-
     pub fn get(&self, name: &str) -> Option<&Cookie<'static>> {
         self.jar.get(name)
     }
 
-    pub fn remove(mut self, cookie: Cookie<'static>) -> Self {
+    pub fn remove<C>(mut self, cookie: C) -> Self
+    where
+        C: Into<Cookie<'static>>,
+    {
         self.jar.remove(cookie);
         self
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn add<C>(mut self, cookie: C) -> Self
+    where
+        C: Into<Cookie<'static>>,
+    {
+        self.jar.add(cookie);
+        self
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Cookie<'static>> {
+        self.jar.iter()
     }
 
     pub fn finish(self) -> impl Future<Output = Finish<Result<HeaderMap, SdkError<EncryptError>>>> {
@@ -153,27 +163,26 @@ where
         'a: 'c,
         'b: 'c,
     {
-        Box::pin(
-            PrivateCookieJar::from_headers(
-                &parts.headers,
-                Client::from_ref(state),
-                K::from_ref(state).into(),
-            )
-            .map_ok(
-                |PrivateCookieJar {
-                     jar,
-                     client,
-                     key_id,
-                     ..
-                 }| Self {
-                    jar,
-                    client,
-                    key_id,
-                    _marker: PhantomData,
-                },
-            )
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        PrivateCookieJar::from_headers(
+            &parts.headers,
+            Client::from_ref(state),
+            K::from_ref(state).into(),
         )
+        .map_ok(
+            |PrivateCookieJar {
+                 jar,
+                 client,
+                 key_id,
+                 ..
+             }| Self {
+                jar,
+                client,
+                key_id,
+                _marker: PhantomData,
+            },
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .boxed()
     }
 }
 

@@ -1,3 +1,4 @@
+use aws_config::BehaviorVersion;
 use axum::body::Body;
 use axum::extract::FromRef;
 use axum::http::{StatusCode, Uri};
@@ -17,7 +18,7 @@ async fn main() {
         .without_time()
         .init();
 
-    let config = aws_config::from_env().load().await;
+    let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
 
     #[derive(Clone, FromRef)]
     struct State {
@@ -51,10 +52,9 @@ async fn counter(jar: PrivateCookieJar) -> impl IntoResponse {
     let count = count + 1;
 
     let jar = jar.add(
-        Cookie::build("count", count.to_string())
+        Cookie::build(("count", count.to_string()))
             .http_only(true)
-            .secure(true)
-            .finish(),
+            .secure(true),
     );
 
     (jar.finish().await, Json(Response { count }))
