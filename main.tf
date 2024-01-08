@@ -21,12 +21,7 @@ resource "null_resource" "this" {
 
   provisioner "local-exec" {
     working_dir = path.module
-    command     = <<EOT
-cargo lambda build --arm64 --example sample --release
-install -D \
-${path.module}/target/aarch64-unknown-linux-gnu/release/examples/sample \
-${path.module}/target/lambda/sample/bootstrap
-EOT
+    command     = "cargo lambda build --arm64 --example sample --lambda-dir ${path.module}/target/lambda/ --release"
   }
 }
 
