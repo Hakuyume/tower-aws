@@ -3,12 +3,13 @@ use axum::body::Body;
 use axum::extract::FromRef;
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Json};
-use axum::routing;
-use axum::Router;
+use axum::{routing, Extension, Router};
 use serde::Serialize;
 use std::env;
+use std::net::IpAddr;
 use tower::Layer;
 use tower_aws::kms_cookie::{Cookie, KeyId, PrivateCookieJar};
+use tower_aws::lambda_compat::SourceIp;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -27,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let app = Router::new()
+        .route("/info", routing::get(info))
         .route("/counter", routing::get(counter))
         .fallback(fallback)
         .with_state(State {
@@ -39,6 +41,15 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::format_err!(e))?;
 
     Ok(())
+}
+
+async fn info(Extension(SourceIp(source_ip)): Extension<SourceIp<IpAddr>>) -> impl IntoResponse {
+    #[derive(Serialize)]
+    struct Response {
+        source_ip: IpAddr,
+    }
+
+    Json(Response { source_ip })
 }
 
 async fn counter(jar: PrivateCookieJar) -> impl IntoResponse {

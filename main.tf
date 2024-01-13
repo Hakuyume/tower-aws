@@ -21,7 +21,7 @@ resource "null_resource" "this" {
 
   provisioner "local-exec" {
     working_dir = path.module
-    command     = "cargo lambda build --arm64 --example sample --lambda-dir ${path.module}/target/lambda/ --release"
+    command     = "cargo lambda build --arm64 --example=sample --lambda-dir=${path.module}/target/lambda/ --release"
   }
 }
 
