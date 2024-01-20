@@ -153,7 +153,7 @@ where
     Client: FromRef<S>,
     K: FromRef<S> + Into<KeyId>,
 {
-    type Rejection = (StatusCode, String);
+    type Rejection = StatusCode;
 
     fn from_request_parts<'a, 'b, 'c>(
         parts: &'a mut Parts,
@@ -181,18 +181,22 @@ where
                 _marker: PhantomData,
             },
         )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .inspect_err(|e| tracing::error!(error = ?e))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         .boxed()
     }
 }
 
 impl IntoResponseParts for Finish<Result<HeaderMap, SdkError<EncryptError>>> {
-    type Error = (StatusCode, String);
+    type Error = StatusCode;
 
     fn into_response_parts(self, parts: ResponseParts) -> Result<ResponseParts, Self::Error> {
         Ok(self
             .0
-            .map_err(|e| (http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(|e| {
+                tracing::error!(error = ?e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
             .into_response_parts(parts)
             .unwrap())
     }
