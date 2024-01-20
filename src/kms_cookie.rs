@@ -16,6 +16,7 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
+use tracing::Instrument;
 
 #[derive(Clone)]
 pub struct KeyId(Arc<str>);
@@ -42,6 +43,8 @@ impl PrivateCookieJar {
         client: Client,
         key_id: KeyId,
     ) -> impl Future<Output = Result<Self, SdkError<DecryptError>>> {
+        let span = tracing::info_span!("from_headers", key_id = &*key_id.0);
+
         let cookie_outputs = headers
             .get_all(COOKIE)
             .into_iter()
@@ -61,38 +64,41 @@ impl PrivateCookieJar {
                     .map(|output| match output {
                         Ok(output) => Ok(Some((cookie, output))),
                         Err(e @ SdkError::ServiceError(_)) => {
-                            tracing::warn!(error = e.to_string());
+                            tracing::warn!(error = ?e);
                             Ok(None)
                         }
                         Err(e) => {
-                            tracing::error!(error = e.to_string());
+                            tracing::error!(error = ?e);
                             Err(e)
                         }
                     })
             });
 
-        futures::future::try_join_all(cookie_outputs).map_ok(|cookie_outputs| {
-            let mut jar = CookieJar::new();
-            for (mut cookie, output) in cookie_outputs.into_iter().flatten() {
-                if let Some(plaintext) = output.plaintext() {
-                    if let Ok(value) = String::from_utf8(plaintext.clone().into_inner()) {
-                        cookie.set_value(value);
-                        jar.add_original(cookie);
+        futures::future::try_join_all(cookie_outputs)
+            .map_ok(|cookie_outputs| {
+                let mut jar = CookieJar::new();
+                for (mut cookie, output) in cookie_outputs.into_iter().flatten() {
+                    if let Some(plaintext) = output.plaintext() {
+                        if let Ok(value) = String::from_utf8(plaintext.clone().into_inner()) {
+                            cookie.set_value(value);
+                            jar.add_original(cookie);
+                        }
                     }
                 }
-            }
-            Self {
-                jar,
-                client,
-                key_id,
-                _marker: PhantomData,
-            }
-        })
+                Self {
+                    jar,
+                    client,
+                    key_id,
+                    _marker: PhantomData,
+                }
+            })
+            .instrument(span)
     }
 }
 
 impl<K> PrivateCookieJar<K> {
     pub fn into_headers(self) -> impl Future<Output = Result<HeaderMap, SdkError<EncryptError>>> {
+        let span = tracing::info_span!("into_headers", key_id = &*self.key_id.0);
         futures::future::try_join_all(self.jar.delta().cloned().map(|cookie| {
             self.client
                 .encrypt()
@@ -100,7 +106,7 @@ impl<K> PrivateCookieJar<K> {
                 .plaintext(Blob::new(cookie.value()))
                 .send()
                 .map_ok(|output| (cookie, output))
-                .inspect_err(|e| tracing::error!(error = e.to_string()))
+                .inspect_err(|e| tracing::error!(error = ?e))
         }))
         .map_ok(|cookie_outputs| {
             let mut headers = HeaderMap::new();
@@ -114,6 +120,7 @@ impl<K> PrivateCookieJar<K> {
             }
             headers
         })
+        .instrument(span)
     }
 
     pub fn get(&self, name: &str) -> Option<&Cookie<'static>> {
@@ -181,7 +188,6 @@ where
                 _marker: PhantomData,
             },
         )
-        .inspect_err(|e| tracing::error!(error = ?e))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         .boxed()
     }
@@ -193,10 +199,7 @@ impl IntoResponseParts for Finish<Result<HeaderMap, SdkError<EncryptError>>> {
     fn into_response_parts(self, parts: ResponseParts) -> Result<ResponseParts, Self::Error> {
         Ok(self
             .0
-            .map_err(|e| {
-                tracing::error!(error = ?e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             .into_response_parts(parts)
             .unwrap())
     }
